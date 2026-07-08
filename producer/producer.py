@@ -3,10 +3,10 @@ import random
 import time
 import math
 from datetime import datetime, timezone
-from kafka import KafkaProducer
+from azure.eventhub import EventHubProducerClient, EventData
 
-KAFKA_BROKER = "localhost:9092"
-TOPIC = "energy-sensors"
+EVENTHUB_CONNECTION_STR = "Endpoint=sb://energysentinel.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=NE6EQCWRqydBHQXx/oPDrnjIPEtbD8Toi+AEhG/pKhU="
+EVENTHUB_NAME = "energy-sensors"
 
 SENSORS = {
     "SENSOR_A01": {"plant": "PLANT_A", "base_power": 500, "base_temp": 70},
@@ -20,6 +20,7 @@ SENSORS = {
     "SENSOR_C01": {"plant": "PLANT_C", "base_power": 120, "base_temp": 50},
     "SENSOR_C02": {"plant": "PLANT_C", "base_power": 110, "base_temp": 48},
 }
+
 
 def generate_reading(sensor_id: str, timestamp: str, force_anomaly: bool = False) -> dict:
     config = SENSORS[sensor_id]
@@ -35,8 +36,8 @@ def generate_reading(sensor_id: str, timestamp: str, force_anomaly: bool = False
     temperature = base_temp * time_factor + random.uniform(-2, 2)
     power_factor = 0.87 + random.uniform(-0.02, 0.02)
     frequency = 50 + random.uniform(-0.1, 0.1)
-    is_anomaly = 0
 
+    is_anomaly = 0
     if force_anomaly:
         anomaly_type = random.choice(["power_spike", "voltage_drop", "overheating", "frequency_fault"])
         if anomaly_type == "power_spike":
@@ -66,23 +67,28 @@ def generate_reading(sensor_id: str, timestamp: str, force_anomaly: bool = False
         "is_anomaly": is_anomaly,
     }
 
+
 def main():
-    producer = KafkaProducer(
-        bootstrap_servers=KAFKA_BROKER,
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+    producer = EventHubProducerClient.from_connection_string(
+        conn_str=EVENTHUB_CONNECTION_STR,
+        eventhub_name=EVENTHUB_NAME,
     )
 
-    print(f"EnergySentinel Producer started → topic: {TOPIC}")
+    print(f"EnergySentinel Producer started → Event Hub: {EVENTHUB_NAME}")
     print("Press Ctrl+C to stop\n")
 
     batch_count = 0
     try:
         while True:
             timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            event_batch = producer.create_batch()
+
             for sensor_id in SENSORS:
                 is_anomaly = random.random() < 0.05
                 reading = generate_reading(sensor_id, timestamp, force_anomaly=is_anomaly)
-                producer.send(TOPIC, value=reading, key=sensor_id.encode("utf-8"))
+                event_batch.add(EventData(json.dumps(reading)))
+
+            producer.send_batch(event_batch)
 
             batch_count += 1
             if batch_count % 10 == 0:
@@ -92,8 +98,9 @@ def main():
 
     except KeyboardInterrupt:
         print(f"\nStopped. Total: {batch_count} batches sent.")
-        producer.flush()
+    finally:
         producer.close()
+
 
 if __name__ == "__main__":
     main()
